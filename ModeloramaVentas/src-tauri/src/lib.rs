@@ -1,3 +1,4 @@
+mod auth;
 mod cash;
 mod db;
 mod sales;
@@ -168,6 +169,9 @@ pub fn run() {
             test_db_connection,
             test_db_tables,
             test_db_query,
+            // ── Auth ──
+            auth::login_with_pin,
+            auth::get_user_by_id,
             // ── Caja ──
             cash::open_cash_session,
             cash::get_current_cash_session,

@@ -2174,8 +2174,10 @@ dependencies = [
 name = "modeloramaventas"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tauri",
  "tauri-build",
