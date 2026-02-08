@@ -97,6 +97,13 @@ pub async fn init_db(app: &AppHandle) -> Result<Db, DbError> {
 
   apply_schema(app, &pool).await?;
 
+  // ── Migraciones idempotentes ──────────────────────────────────────────
+  // Agregar columna status a sales (para flujo DRAFT → FINALIZED).
+  // Si la columna ya existe, el ALTER TABLE falla silenciosamente.
+  let _ = pool.execute(
+    "ALTER TABLE sales ADD COLUMN status TEXT NOT NULL DEFAULT 'FINALIZED' CHECK(status IN ('DRAFT','FINALIZED'))"
+  ).await;
+
   Ok(Db(pool))
 }
 

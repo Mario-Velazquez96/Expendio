@@ -183,7 +183,12 @@ pub fn run() {
             sales::search_products,
             sales::get_product_by_barcode,
             sales::list_products,
+            sales::create_sale,
+            sales::add_sale_line,
+            sales::update_sale_line_qty,
+            sales::remove_sale_line,
             sales::finalize_sale,
+            sales::get_sale_detail,
             sales::get_session_sales,
         ])
         .run(tauri::generate_context!())

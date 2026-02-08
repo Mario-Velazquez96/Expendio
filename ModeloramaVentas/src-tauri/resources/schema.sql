@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS sales (
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   user_id         INTEGER NOT NULL,
   total_cents     INTEGER NOT NULL CHECK(total_cents >= 0),
+  status          TEXT NOT NULL DEFAULT 'FINALIZED' CHECK(status IN ('DRAFT','FINALIZED')),
   payment_method  TEXT NOT NULL DEFAULT 'CASH' CHECK(payment_method IN ('CASH','TRANSFER','EXTERNAL')),
   FOREIGN KEY(cash_session_id) REFERENCES cash_sessions(id),
   FOREIGN KEY(user_id) REFERENCES users(id)
