@@ -115,3 +115,26 @@ export interface SaleBrief {
   user_id: number;
   status: string;
 }
+
+// ── Inventory (admin) ────────────────────────────────────────────────────────
+
+export interface ProductDetail {
+  id: number;
+  name: string;
+  category: string;
+  barcode: string | null;
+  units_per_case: number;
+  cost_cents: number;
+  unit_price_cents: number;
+  stock_min: number;
+  active: number;
+  on_hand: number;
+}
+
+export interface StockResult {
+  product_id: number;
+  product_name: string;
+  cases_added: number;
+  units_added: number;
+  new_on_hand: number;
+}

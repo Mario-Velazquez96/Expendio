@@ -1,6 +1,7 @@
 mod auth;
 mod cash;
 mod db;
+mod inventory;
 mod sales;
 
 use db::{init_db, Db};
@@ -193,6 +194,12 @@ pub fn run() {
             sales::finalize_sale,
             sales::get_sale_detail,
             sales::get_session_sales,
+            // ── Inventario (admin) ──
+            inventory::list_all_products_admin,
+            inventory::create_product,
+            inventory::add_stock,
+            inventory::update_product,
+            inventory::toggle_product_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

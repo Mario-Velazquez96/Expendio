@@ -6,8 +6,9 @@
   import CashOpen from '$lib/components/CashOpen.svelte';
   import POS from '$lib/components/POS.svelte';
   import CashPanel from '$lib/components/CashPanel.svelte';
+  import Inventory from '$lib/components/Inventory.svelte';
 
-  type Tab = 'pos' | 'cash';
+  type Tab = 'pos' | 'cash' | 'inventory';
 
   // ── Estado principal ──
   let cashSession = $state<CashSession | null>(null);
@@ -88,6 +89,13 @@
         >
           💰 Caja
         </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'inventory'}
+          onclick={() => activeTab = 'inventory'}
+        >
+          📦 Inventario
+        </button>
       </nav>
 
       <div class="header-right">
@@ -105,12 +113,14 @@
     <main class="app-content">
       {#if activeTab === 'pos'}
         <POS session={cashSession} />
-      {:else}
+      {:else if activeTab === 'cash'}
         <CashPanel
           session={cashSession}
           user={authStore.user!}
           onSessionClosed={handleSessionClosed}
         />
+      {:else if activeTab === 'inventory'}
+        <Inventory />
       {/if}
     </main>
   </div>
