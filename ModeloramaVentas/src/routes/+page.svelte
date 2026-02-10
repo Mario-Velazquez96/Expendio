@@ -1,442 +1,263 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  
-  // Importar invoke dinámicamente solo en el cliente
-  let invoke: any = null;
-  let isTauri = false;
-  
-  onMount(async () => {
+  import { authStore } from '$lib/stores/auth.svelte';
+  import { getCurrentCashSession } from '$lib/api/cash';
+  import type { CashSession } from '$lib/types';
+  import Login from '$lib/components/Login.svelte';
+  import CashOpen from '$lib/components/CashOpen.svelte';
+  import POS from '$lib/components/POS.svelte';
+  import CashPanel from '$lib/components/CashPanel.svelte';
+
+  type Tab = 'pos' | 'cash';
+
+  // ── Estado principal ──
+  let cashSession = $state<CashSession | null>(null);
+  let checkingSession = $state(false);
+  let activeTab = $state<Tab>('pos');
+
+  // ── Handlers ──
+  async function handleLogin() {
+    checkingSession = true;
     try {
-      // Solo importar en el cliente (no en SSR)
-      if (typeof window !== 'undefined') {
-        const tauriCore = await import("@tauri-apps/api/core");
-        invoke = tauriCore.invoke;
-        isTauri = tauriCore.isTauri();
-        
-        if (isTauri) {
-          await loadDbPath();
-        }
-      }
+      cashSession = await getCurrentCashSession();
     } catch (e) {
-      console.warn("Tauri no está disponible:", e);
-      isTauri = false;
-    }
-  });
-
-  let name = $state("");
-  let greetMsg = $state("");
-  let dbPath = $state("");
-  let testResults = $state<{
-    connection?: any;
-    tables?: any;
-    query?: any;
-  }>({});
-
-  async function greet(event: Event) {
-    event.preventDefault();
-    if (!invoke || !isTauri) {
-      greetMsg = "Error: Tauri no está disponible";
-      return;
-    }
-    try {
-      greetMsg = await invoke("greet", { name });
-    } catch (error) {
-      greetMsg = `Error: ${error}`;
+      console.error('Error al verificar caja:', e);
+    } finally {
+      checkingSession = false;
     }
   }
 
-  async function loadDbPath() {
-    if (!invoke || !isTauri) {
-      dbPath = "Error: Tauri no está disponible";
-      return;
-    }
-    try {
-      dbPath = await invoke("get_db_path");
-    } catch (error) {
-      dbPath = `Error: ${error}`;
-    }
+  function handleSessionOpened(session: CashSession) {
+    cashSession = session;
+    activeTab = 'pos';
   }
 
-  async function testConnection() {
-    if (!invoke || !isTauri) {
-      testResults.connection = { success: false, message: "Error: Tauri no está disponible" };
-      return;
-    }
-    try {
-      testResults.connection = await invoke("test_db_connection");
-    } catch (error) {
-      testResults.connection = { success: false, message: `Error: ${error}` };
-    }
+  function handleSessionClosed() {
+    cashSession = null;
+    activeTab = 'pos';
   }
 
-  async function testTables() {
-    if (!invoke || !isTauri) {
-      testResults.tables = { success: false, message: "Error: Tauri no está disponible" };
-      return;
-    }
-    try {
-      testResults.tables = await invoke("test_db_tables");
-    } catch (error) {
-      testResults.tables = { success: false, message: `Error: ${error}` };
-    }
+  function handleLogout() {
+    authStore.logout();
+    cashSession = null;
+    activeTab = 'pos';
   }
-
-  async function testQuery() {
-    if (!invoke || !isTauri) {
-      testResults.query = { success: false, message: "Error: Tauri no está disponible" };
-      return;
-    }
-    try {
-      testResults.query = await invoke("test_db_query");
-    } catch (error) {
-      testResults.query = { success: false, message: `Error: ${error}` };
-    }
-  }
-
-  async function runAllTests() {
-    await loadDbPath();
-    await testConnection();
-    await testTables();
-    await testQuery();
-  }
-
 </script>
 
-<main class="container">
-  <h1>🧪 Pruebas de Base de Datos</h1>
+{#if !authStore.isAuthenticated}
+  <!-- ═══ LOGIN ═══ -->
+  <Login onLogin={handleLogin} />
 
-  <div class="db-section">
-    <h2>📁 Ubicación de la Base de Datos</h2>
-    <div class="db-path">
-      <code>{dbPath || "Cargando..."}</code>
-      <button onclick={loadDbPath}>🔄 Actualizar</button>
+{:else if checkingSession}
+  <!-- ═══ Verificando sesión de caja ═══ -->
+  <div class="loading-screen">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <p>Verificando caja...</p>
     </div>
   </div>
 
-  <div class="db-section">
-    <h2>🔍 Pruebas</h2>
-    <div class="test-buttons">
-      <button onclick={testConnection} class="test-btn">1. Probar Conexión</button>
-      <button onclick={testTables} class="test-btn">2. Listar Tablas</button>
-      <button onclick={testQuery} class="test-btn">3. Contar Registros</button>
-      <button onclick={runAllTests} class="test-btn primary">▶️ Ejecutar Todas</button>
-    </div>
-  </div>
+{:else if !cashSession}
+  <!-- ═══ APERTURA DE CAJA ═══ -->
+  <CashOpen
+    user={authStore.user!}
+    onSessionOpened={handleSessionOpened}
+    onLogout={handleLogout}
+  />
 
-  <div class="results">
-    {#if testResults.connection}
-      <div class="result-card">
-        <h3>🔌 Prueba de Conexión</h3>
-        <p class={testResults.connection.success ? "success" : "error"}>
-          {testResults.connection.message}
-        </p>
+{:else}
+  <!-- ═══ APLICACIÓN PRINCIPAL ═══ -->
+  <div class="app-shell">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <span class="brand">🍺 BeerPOS</span>
       </div>
-    {/if}
 
-    {#if testResults.tables}
-      <div class="result-card">
-        <h3>📊 Tablas en la Base de Datos</h3>
-        <p class={testResults.tables.success ? "success" : "error"}>
-          {testResults.tables.message}
-        </p>
-        {#if testResults.tables.details}
-          <div class="details">
-            <p><strong>Total:</strong> {testResults.tables.details.count} tablas</p>
-            <ul>
-              {#each testResults.tables.details.tables as table}
-                <li>{table}</li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
+      <nav class="header-tabs">
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'pos'}
+          onclick={() => activeTab = 'pos'}
+        >
+          🛒 POS
+        </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'cash'}
+          onclick={() => activeTab = 'cash'}
+        >
+          💰 Caja
+        </button>
+      </nav>
+
+      <div class="header-right">
+        <div class="user-info">
+          <span class="user-name">{authStore.user?.name}</span>
+          <span class="user-role">{authStore.user?.role === 'OWNER' ? 'Dueño' : 'Empleado'}</span>
+        </div>
+        <button class="logout-btn" onclick={handleLogout} title="Cerrar sesión">
+          🚪
+        </button>
       </div>
-    {/if}
+    </header>
 
-    {#if testResults.query}
-      <div class="result-card">
-        <h3>📈 Conteo de Registros</h3>
-        <p class={testResults.query.success ? "success" : "error"}>
-          {testResults.query.message}
-        </p>
-        {#if testResults.query.details}
-          <div class="details">
-            <table>
-              <thead>
-                <tr>
-                  <th>Tabla</th>
-                  <th>Registros</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each Object.entries(testResults.query.details) as [table, count]}
-                  <tr>
-                    <td>{table}</td>
-                    <td>{count}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
-      </div>
-    {/if}
+    <!-- Content -->
+    <main class="app-content">
+      {#if activeTab === 'pos'}
+        <POS session={cashSession} />
+      {:else}
+        <CashPanel
+          session={cashSession}
+          user={authStore.user!}
+          onSessionClosed={handleSessionClosed}
+        />
+      {/if}
+    </main>
   </div>
-
-  <div class="db-section">
-    <h2>💬 Comando de Prueba Original</h2>
-    <form class="row" onsubmit={greet}>
-      <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{greetMsg}</p>
-  </div>
-</main>
+{/if}
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0 auto;
-  padding: 2rem;
-  max-width: 900px;
-}
-
-.db-section {
-  margin: 2rem 0;
-  padding: 1.5rem;
-  background: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.db-section h2 {
-  margin-top: 0;
-  color: #396cd8;
-}
-
-.db-path {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.db-path code {
-  flex: 1;
-  padding: 0.5rem;
-  background: #f5f5f5;
-  border-radius: 4px;
-  font-family: 'Courier New', monospace;
-  word-break: break-all;
-}
-
-.test-buttons {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.test-btn {
-  padding: 0.75rem 1.5rem;
-  background-color: #646cff;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: background-color 0.25s;
-}
-
-.test-btn:hover {
-  background-color: #535bf2;
-}
-
-.test-btn.primary {
-  background-color: #24c8db;
-}
-
-.test-btn.primary:hover {
-  background-color: #1fa8b8;
-}
-
-.results {
-  margin-top: 2rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.result-card {
-  padding: 1.5rem;
-  background: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  border-left: 4px solid #646cff;
-}
-
-.result-card h3 {
-  margin-top: 0;
-  color: #396cd8;
-}
-
-.result-card .success {
-  color: #22c55e;
-  font-weight: 500;
-}
-
-.result-card .error {
-  color: #ef4444;
-  font-weight: 500;
-}
-
-.details {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid #e5e5e5;
-}
-
-.details ul {
-  list-style-type: none;
-  padding: 0;
-  margin: 0.5rem 0;
-}
-
-.details li {
-  padding: 0.25rem 0;
-  padding-left: 1rem;
-  position: relative;
-}
-
-.details li::before {
-  content: "▸";
-  position: absolute;
-  left: 0;
-  color: #646cff;
-}
-
-.details table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 0.5rem;
-}
-
-.details th,
-.details td {
-  padding: 0.5rem;
-  text-align: left;
-  border-bottom: 1px solid #e5e5e5;
-}
-
-.details th {
-  background-color: #f5f5f5;
-  font-weight: 600;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  /* ═══ Loading Screen ═══ */
+  .loading-screen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
   }
 
-  a:hover {
-    color: #24c8db;
+  .loading-card {
+    text-align: center;
+    color: rgba(255, 255, 255, 0.6);
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(255, 255, 255, 0.1);
+    border-top-color: #f59e0b;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 1rem;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ═══ App Shell ═══ */
+  .app-shell {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ═══ Header ═══ */
+  .app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 1.25rem;
+    height: 56px;
+    background: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    flex-shrink: 0;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .brand {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.3px;
+  }
+
+  .header-tabs {
+    display: flex;
+    gap: 0.25rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 0.25rem;
+  }
+
+  .tab-btn {
+    padding: 0.45rem 1.25rem;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tab-btn.active {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    font-weight: 600;
+  }
+
+  .tab-btn:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .user-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0;
+    line-height: 1.2;
+  }
+
+  .user-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  .user-role {
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .logout-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 1.1rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .logout-btn:hover {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+
+  /* ═══ Content ═══ */
+  .app-content {
+    flex: 1;
+    overflow: hidden;
+  }
 </style>

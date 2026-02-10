@@ -153,6 +153,9 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 match init_db(&handle).await {
                     Ok(db) => {
+                        if let Err(e) = auth::seed_users(&db).await {
+                            eprintln!("Error al crear usuarios iniciales: {}", e);
+                        }
                         handle.manage(db);
                     }
                     Err(e) => {

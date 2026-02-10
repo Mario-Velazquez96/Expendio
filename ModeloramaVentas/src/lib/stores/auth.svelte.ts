@@ -13,6 +13,7 @@ export interface AuthState {
 
 // Estado reactivo usando Svelte 5 runes
 let currentUser = $state<User | null>(null);
+let currentPin = $state<string>('');
 
 export const authStore = {
   get user() {
@@ -27,25 +28,20 @@ export const authStore = {
   get isEmployee() {
     return currentUser?.role === 'EMPLOYEE';
   },
-  
-  setUser(user: User | null) {
-    currentUser = user;
-    // Persistir en localStorage para restaurar sesión
-    if (user) {
-      localStorage.setItem('beerpos_user_id', String(user.id));
-    } else {
-      localStorage.removeItem('beerpos_user_id');
-    }
+  /** PIN en memoria para operaciones de venta (nunca se persiste) */
+  get pin() {
+    return currentPin;
   },
-  
+
+  /** Establece el usuario y guarda el PIN en memoria */
+  setUser(user: User, pin: string) {
+    currentUser = user;
+    currentPin = pin;
+  },
+
+  /** Cierra sesión y limpia todo */
   logout() {
     currentUser = null;
-    localStorage.removeItem('beerpos_user_id');
-  },
-  
-  // Obtener ID guardado para restaurar sesión
-  getSavedUserId(): number | null {
-    const saved = localStorage.getItem('beerpos_user_id');
-    return saved ? parseInt(saved, 10) : null;
+    currentPin = '';
   }
 };

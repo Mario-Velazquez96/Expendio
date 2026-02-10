@@ -1,28 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { authStore } from '$lib/stores/auth.svelte';
-  import { loginWithPin, getUserById } from '$lib/api/auth';
+  import { loginWithPin } from '$lib/api/auth';
+
+  let { onLogin }: { onLogin: () => void } = $props();
 
   let pin = $state('');
   let error = $state('');
   let loading = $state(false);
-  let initialized = $state(false);
-
-  onMount(async () => {
-    // Intentar restaurar sesión
-    const savedUserId = authStore.getSavedUserId();
-    if (savedUserId) {
-      try {
-        const user = await getUserById(savedUserId);
-        if (user) {
-          authStore.setUser(user);
-        }
-      } catch (e) {
-        console.warn('No se pudo restaurar la sesión:', e);
-      }
-    }
-    initialized = true;
-  });
 
   async function handleLogin(e: Event) {
     e.preventDefault();
@@ -37,8 +21,9 @@
     try {
       const result = await loginWithPin(pin);
       if (result.success && result.user) {
-        authStore.setUser(result.user);
+        authStore.setUser(result.user, pin);
         pin = '';
+        onLogin();
       } else {
         error = result.error || 'PIN incorrecto';
       }
@@ -51,60 +36,50 @@
 
   function handlePinInput(e: Event) {
     const input = e.target as HTMLInputElement;
-    // Solo permitir dígitos
     input.value = input.value.replace(/\D/g, '').slice(0, 6);
     pin = input.value;
   }
 </script>
 
-{#if !initialized}
-  <div class="login-container">
-    <div class="login-card">
-      <div class="loading-spinner"></div>
-      <p>Cargando...</p>
-    </div>
-  </div>
-{:else}
-  <div class="login-container">
-    <div class="login-card">
-      <div class="logo">🍺</div>
-      <h1>BeerPOS</h1>
-      <p class="subtitle">Ingresa tu PIN para continuar</p>
-      
-      <form onsubmit={handleLogin}>
-        <div class="pin-input-container">
-          <input
-            type="password"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            maxlength="6"
-            placeholder="••••••"
-            value={pin}
-            oninput={handlePinInput}
-            disabled={loading}
-            class="pin-input"
-            autofocus
-          />
-          <div class="pin-dots">
-            {#each Array(6) as _, i}
-              <span class="dot" class:filled={pin.length > i}></span>
-            {/each}
-          </div>
+<div class="login-container">
+  <div class="login-card">
+    <div class="logo">🍺</div>
+    <h1>BeerPOS</h1>
+    <p class="subtitle">Ingresa tu PIN para continuar</p>
+    
+    <form onsubmit={handleLogin}>
+      <div class="pin-input-container">
+        <input
+          type="password"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          maxlength="6"
+          placeholder="••••••"
+          value={pin}
+          oninput={handlePinInput}
+          disabled={loading}
+          class="pin-input"
+          autofocus
+        />
+        <div class="pin-dots">
+          {#each Array(6) as _, i}
+            <span class="dot" class:filled={pin.length > i}></span>
+          {/each}
         </div>
+      </div>
 
-        {#if error}
-          <p class="error">{error}</p>
-        {/if}
+      {#if error}
+        <p class="error">{error}</p>
+      {/if}
 
-        <button type="submit" disabled={loading || pin.length !== 6} class="login-btn">
-          {loading ? 'Verificando...' : 'Ingresar'}
-        </button>
-      </form>
+      <button type="submit" disabled={loading || pin.length !== 6} class="login-btn">
+        {loading ? 'Verificando...' : 'Ingresar'}
+      </button>
+    </form>
 
-      <p class="hint">PIN de 6 dígitos</p>
-    </div>
+    <p class="hint">PIN de 6 dígitos</p>
   </div>
-{/if}
+</div>
 
 <style>
   .login-container {
@@ -237,19 +212,5 @@
     color: rgba(255, 255, 255, 0.4);
     font-size: 0.8rem;
     margin: 1.5rem 0 0 0;
-  }
-
-  .loading-spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid rgba(255, 255, 255, 0.1);
-    border-top-color: #f59e0b;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin: 0 auto 1rem;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 </style>
