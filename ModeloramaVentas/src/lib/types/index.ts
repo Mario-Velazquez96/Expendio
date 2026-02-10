@@ -138,3 +138,10 @@ export interface StockResult {
   units_added: number;
   new_on_hand: number;
 }
+
+export interface AdjustResult {
+  product_id: number;
+  product_name: string;
+  units_removed: number;
+  new_on_hand: number;
+}

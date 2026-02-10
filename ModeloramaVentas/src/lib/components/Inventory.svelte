@@ -5,6 +5,7 @@
     listAllProductsAdmin,
     createProduct,
     addStock,
+    adjustStock,
     updateProduct,
     toggleProductActive
   } from '$lib/api/inventory';
@@ -20,7 +21,7 @@
   let filterActive = $state<'all' | 'active' | 'inactive'>('all');
 
   // ── Modal ──
-  type ModalMode = 'none' | 'create' | 'edit' | 'stock';
+  type ModalMode = 'none' | 'create' | 'edit' | 'stock' | 'adjust';
   let modalMode = $state<ModalMode>('none');
   let modalLoading = $state(false);
   let modalError = $state('');
@@ -39,6 +40,10 @@
   // ── Form fields (add stock) ──
   let fStockQty = $state('');
   let fStockNote = $state('');
+
+  // ── Form fields (adjust stock) ──
+  let fAdjustQty = $state('');
+  let fAdjustReason = $state('');
 
   // ── Computed ──
   let filteredProducts = $derived.by(() => {
@@ -242,6 +247,48 @@
     }
   }
 
+  // ── Adjust Stock (subtract) ──
+  function openAdjustModal(product: ProductDetail) {
+    modalMode = 'adjust';
+    modalError = '';
+    selectedProduct = product;
+    fAdjustQty = '';
+    fAdjustReason = '';
+  }
+
+  async function handleAdjustStock(e: Event) {
+    e.preventDefault();
+    if (!selectedProduct) return;
+    modalError = '';
+
+    const qty = parseInt(fAdjustQty);
+    if (isNaN(qty) || qty <= 0) {
+      modalError = 'Ingresa una cantidad válida mayor a 0';
+      return;
+    }
+    if (!fAdjustReason.trim()) {
+      modalError = 'Debes indicar el motivo del ajuste';
+      return;
+    }
+
+    modalLoading = true;
+    try {
+      const result = await adjustStock(
+        authStore.pin,
+        selectedProduct.id,
+        qty,
+        fAdjustReason.trim()
+      );
+      modalMode = 'none';
+      showSuccess(`Ajuste realizado: -${result.units_removed} pzas de "${result.product_name}". Nuevo stock: ${result.new_on_hand} pzas`);
+      await loadProducts();
+    } catch (e) {
+      modalError = String(e);
+    } finally {
+      modalLoading = false;
+    }
+  }
+
   function closeModal() {
     modalMode = 'none';
     selectedProduct = null;
@@ -376,6 +423,11 @@
                     <button class="action-btn stock-btn" onclick={() => openStockModal(product)} title="Agregar stock">
                       📥
                     </button>
+                    {#if authStore.isOwner && product.on_hand > 0}
+                      <button class="action-btn adjust-btn" onclick={() => openAdjustModal(product)} title="Ajustar stock (restar)">
+                        📤
+                      </button>
+                    {/if}
                   {/if}
                 </div>
               </td>
@@ -516,6 +568,66 @@
           </button>
           <button type="submit" class="btn-modal-ok" disabled={modalLoading || !fStockQty}>
             {modalLoading ? 'Registrando...' : 'Agregar Stock'}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
+<!-- ═══ MODAL: Ajustar Stock (restar) ═══ -->
+{#if modalMode === 'adjust' && selectedProduct}
+  <div class="modal-overlay" onclick={closeModal} role="dialog">
+    <div class="modal-card small" onclick={(e) => e.stopPropagation()} role="document">
+      <h3>📤 Ajustar Stock</h3>
+      <p class="stock-product-name">{selectedProduct.name}</p>
+      <p class="stock-current">Stock actual: <strong>{selectedProduct.on_hand}</strong> piezas</p>
+
+      <form onsubmit={handleAdjustStock}>
+        <div class="form-field">
+          <label for="f-adjust-qty">
+            Piezas a restar
+          </label>
+          <input
+            id="f-adjust-qty"
+            type="number"
+            min="1"
+            max={selectedProduct.on_hand}
+            bind:value={fAdjustQty}
+            placeholder="Ej: 5 piezas"
+            disabled={modalLoading}
+          />
+          {#if parseInt(fAdjustQty) > 0}
+            <span class="field-hint adjust-hint">
+              Stock resultante: {selectedProduct.on_hand - parseInt(fAdjustQty)} piezas
+              {#if selectedProduct.units_per_case > 0}
+                ({Math.floor((selectedProduct.on_hand - parseInt(fAdjustQty)) / selectedProduct.units_per_case)} cajas)
+              {/if}
+            </span>
+          {/if}
+        </div>
+
+        <div class="form-field">
+          <label for="f-adjust-reason">Motivo del ajuste *</label>
+          <input
+            id="f-adjust-reason"
+            type="text"
+            bind:value={fAdjustReason}
+            placeholder="Ej: Producto dañado, merma, robo..."
+            disabled={modalLoading}
+          />
+        </div>
+
+        {#if modalError}
+          <div class="modal-error">⚠️ {modalError}</div>
+        {/if}
+
+        <div class="modal-actions">
+          <button type="button" class="btn-modal-cancel" onclick={closeModal} disabled={modalLoading}>
+            Cancelar
+          </button>
+          <button type="submit" class="btn-modal-danger" disabled={modalLoading || !fAdjustQty || !fAdjustReason.trim()}>
+            {modalLoading ? 'Procesando...' : 'Confirmar Ajuste'}
           </button>
         </div>
       </form>
@@ -817,6 +929,10 @@
     background: rgba(34,197,94,0.15);
     border-color: rgba(34,197,94,0.3);
   }
+  .action-btn.adjust-btn:hover {
+    background: rgba(239,68,68,0.15);
+    border-color: rgba(239,68,68,0.3);
+  }
 
   /* ═══ Modal ═══ */
   .modal-overlay {
@@ -982,4 +1098,25 @@
     box-shadow: 0 6px 16px rgba(245,158,11,0.35);
   }
   .btn-modal-ok:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-modal-danger {
+    flex: 1;
+    padding: 0.75rem 1.25rem;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-modal-danger:hover:not(:disabled) {
+    box-shadow: 0 6px 16px rgba(239,68,68,0.35);
+  }
+  .btn-modal-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .adjust-hint {
+    color: rgba(239,68,68,0.8) !important;
+  }
 </style>

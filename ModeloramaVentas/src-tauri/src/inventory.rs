@@ -30,6 +30,14 @@ pub struct StockResult {
     pub new_on_hand: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AdjustResult {
+    pub product_id: i64,
+    pub product_name: String,
+    pub units_removed: i64,
+    pub new_on_hand: i64,
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn row_to_product_detail(r: &sqlx::sqlite::SqliteRow) -> ProductDetail {
@@ -469,4 +477,103 @@ pub async fn toggle_product_active(
         .map_err(|e| format!("Error al obtener producto: {}", e))?;
 
     Ok(row_to_product_detail(&row))
+}
+
+/// Ajusta (resta) stock de un producto por pérdida, merma, etc.
+///
+/// `qty` siempre es positivo y se interpreta en **piezas** (unidades individuales).
+/// El sistema lo restará del inventario.
+///
+/// Solo OWNER.
+#[tauri::command]
+pub async fn adjust_stock(
+    db: State<'_, Db>,
+    pin: String,
+    product_id: i64,
+    qty: i64,
+    reason: String,
+) -> Result<AdjustResult, String> {
+    let user_id = validate_owner(db.pool(), &pin).await?;
+
+    if qty <= 0 {
+        return Err("La cantidad debe ser mayor a 0".into());
+    }
+    if reason.trim().is_empty() {
+        return Err("Debes indicar el motivo del ajuste".into());
+    }
+
+    // Info del producto y stock actual
+    let row = sqlx::query(
+        "SELECT p.id, p.name, COALESCE(ib.on_hand, 0) as on_hand
+         FROM products p
+         LEFT JOIN inventory_balances ib ON p.id = ib.product_id
+         WHERE p.id = ?",
+    )
+    .bind(product_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| format!("Error al buscar producto: {}", e))?
+    .ok_or("Producto no encontrado")?;
+
+    let product_name: String = row.get("name");
+    let current_on_hand: i64 = row.get("on_hand");
+
+    if qty > current_on_hand {
+        return Err(format!(
+            "No se pueden restar {} piezas. Stock actual: {} piezas",
+            qty, current_on_hand
+        ));
+    }
+
+    // ── Transacción ──────────────────────────────────────────────────────
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| format!("Error al iniciar transacción: {}", e))?;
+
+    // Restar del balance
+    sqlx::query(
+        "UPDATE inventory_balances SET on_hand = on_hand - ?, updated_at = datetime('now')
+         WHERE product_id = ?",
+    )
+    .bind(qty)
+    .bind(product_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Error al actualizar inventario: {}", e))?;
+
+    // Registrar movimiento de ajuste (qty_delta negativo)
+    sqlx::query(
+        "INSERT INTO inventory_movements (product_id, qty_delta, type, user_id, note)
+         VALUES (?, ?, 'ADJUSTMENT', ?, ?)",
+    )
+    .bind(product_id)
+    .bind(-qty) // negativo para reflejar salida
+    .bind(user_id)
+    .bind(reason.trim())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Error al registrar movimiento: {}", e))?;
+
+    // Obtener balance actualizado
+    let balance_row =
+        sqlx::query("SELECT on_hand FROM inventory_balances WHERE product_id = ?")
+            .bind(product_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Error al consultar balance: {}", e))?;
+
+    let new_on_hand: i64 = balance_row.get("on_hand");
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Error al confirmar transacción: {}", e))?;
+
+    Ok(AdjustResult {
+        product_id,
+        product_name,
+        units_removed: qty,
+        new_on_hand,
+    })
 }

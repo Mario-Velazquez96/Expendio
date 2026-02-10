@@ -200,6 +200,7 @@ pub fn run() {
             inventory::add_stock,
             inventory::update_product,
             inventory::toggle_product_active,
+            inventory::adjust_stock,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

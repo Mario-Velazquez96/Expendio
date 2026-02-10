@@ -1,6 +1,6 @@
-// API functions para gestión de productos e inventario (solo OWNER)
+// API functions para gestión de productos e inventario
 import { invoke } from '@tauri-apps/api/core';
-import type { ProductDetail, StockResult } from '$lib/types';
+import type { ProductDetail, StockResult, AdjustResult } from '$lib/types';
 
 /** Lista todos los productos (activos e inactivos) — solo OWNER */
 export async function listAllProductsAdmin(pin: string): Promise<ProductDetail[]> {
@@ -80,5 +80,20 @@ export async function toggleProductActive(
   return await invoke<ProductDetail>('toggle_product_active', {
     pin,
     productId
+  });
+}
+
+/** Ajusta (resta) stock por pérdida/merma — solo OWNER */
+export async function adjustStock(
+  pin: string,
+  productId: number,
+  qty: number,
+  reason: string
+): Promise<AdjustResult> {
+  return await invoke<AdjustResult>('adjust_stock', {
+    pin,
+    productId,
+    qty,
+    reason
   });
 }
