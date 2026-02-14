@@ -38,6 +38,19 @@ pub struct AdjustResult {
     pub new_on_hand: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PriceRuleAdmin {
+    pub id: i64,
+    pub product_id: i64,
+    pub name: String,
+    pub required_qty: i64,
+    pub bundle_price_cents: i64,
+    pub start_at: Option<String>,
+    pub end_at: Option<String>,
+    pub enabled: i64,
+    pub priority: i64,
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn row_to_product_detail(r: &sqlx::sqlite::SqliteRow) -> ProductDetail {
@@ -575,5 +588,211 @@ pub async fn adjust_stock(
         product_name,
         units_removed: qty,
         new_on_hand,
+    })
+}
+
+/// Lista promociones (activas e inactivas) de un producto para administración.
+///
+/// Solo OWNER.
+#[tauri::command]
+pub async fn list_product_price_rules_admin(
+    db: State<'_, Db>,
+    pin: String,
+    product_id: i64,
+) -> Result<Vec<PriceRuleAdmin>, String> {
+    let _user_id = validate_owner(db.pool(), &pin).await?;
+
+    let rows = sqlx::query(
+        "SELECT id, product_id, name, required_qty, bundle_price_cents, start_at, end_at, enabled, priority
+         FROM price_rules
+         WHERE product_id = ?
+         ORDER BY required_qty ASC, priority DESC, id DESC",
+    )
+    .bind(product_id)
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| format!("Error al listar promociones: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|r| PriceRuleAdmin {
+            id: r.get("id"),
+            product_id: r.get("product_id"),
+            name: r.get("name"),
+            required_qty: r.get("required_qty"),
+            bundle_price_cents: r.get("bundle_price_cents"),
+            start_at: r.get("start_at"),
+            end_at: r.get("end_at"),
+            enabled: r.get("enabled"),
+            priority: r.get("priority"),
+        })
+        .collect())
+}
+
+/// Crea una promoción para un producto.
+///
+/// Solo OWNER.
+#[tauri::command]
+pub async fn create_price_rule_admin(
+    db: State<'_, Db>,
+    pin: String,
+    product_id: i64,
+    name: String,
+    required_qty: i64,
+    bundle_price_cents: i64,
+    priority: i64,
+    enabled: i64,
+) -> Result<PriceRuleAdmin, String> {
+    let _user_id = validate_owner(db.pool(), &pin).await?;
+
+    if name.trim().is_empty() {
+        return Err("El nombre de la promo no puede estar vacío".into());
+    }
+    if required_qty <= 1 {
+        return Err("La cantidad requerida debe ser mayor a 1".into());
+    }
+    if bundle_price_cents < 0 {
+        return Err("El precio de promo no puede ser negativo".into());
+    }
+    if enabled != 0 && enabled != 1 {
+        return Err("enabled debe ser 0 o 1".into());
+    }
+
+    sqlx::query("SELECT id FROM products WHERE id = ?")
+        .bind(product_id)
+        .fetch_optional(db.pool())
+        .await
+        .map_err(|e| format!("Error al validar producto: {}", e))?
+        .ok_or("Producto no encontrado")?;
+
+    let row = sqlx::query(
+        "INSERT INTO price_rules
+            (product_id, name, required_qty, bundle_price_cents, priority, enabled)
+         VALUES (?, ?, ?, ?, ?, ?)
+         RETURNING id, product_id, name, required_qty, bundle_price_cents, start_at, end_at, enabled, priority",
+    )
+    .bind(product_id)
+    .bind(name.trim())
+    .bind(required_qty)
+    .bind(bundle_price_cents)
+    .bind(priority)
+    .bind(enabled)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| format!("Error al crear promoción: {}", e))?;
+
+    Ok(PriceRuleAdmin {
+        id: row.get("id"),
+        product_id: row.get("product_id"),
+        name: row.get("name"),
+        required_qty: row.get("required_qty"),
+        bundle_price_cents: row.get("bundle_price_cents"),
+        start_at: row.get("start_at"),
+        end_at: row.get("end_at"),
+        enabled: row.get("enabled"),
+        priority: row.get("priority"),
+    })
+}
+
+/// Edita una promoción existente.
+///
+/// Solo OWNER.
+#[tauri::command]
+pub async fn update_price_rule_admin(
+    db: State<'_, Db>,
+    pin: String,
+    rule_id: i64,
+    name: String,
+    required_qty: i64,
+    bundle_price_cents: i64,
+    priority: i64,
+    enabled: i64,
+) -> Result<PriceRuleAdmin, String> {
+    let _user_id = validate_owner(db.pool(), &pin).await?;
+
+    if name.trim().is_empty() {
+        return Err("El nombre de la promo no puede estar vacío".into());
+    }
+    if required_qty <= 1 {
+        return Err("La cantidad requerida debe ser mayor a 1".into());
+    }
+    if bundle_price_cents < 0 {
+        return Err("El precio de promo no puede ser negativo".into());
+    }
+    if enabled != 0 && enabled != 1 {
+        return Err("enabled debe ser 0 o 1".into());
+    }
+
+    let existing = sqlx::query("SELECT id FROM price_rules WHERE id = ?")
+        .bind(rule_id)
+        .fetch_optional(db.pool())
+        .await
+        .map_err(|e| format!("Error al validar promoción: {}", e))?
+        .ok_or("Promoción no encontrada")?;
+
+    let existing_id: i64 = existing.get("id");
+
+    let row = sqlx::query(
+        "UPDATE price_rules
+         SET name = ?, required_qty = ?, bundle_price_cents = ?, priority = ?, enabled = ?
+         WHERE id = ?
+         RETURNING id, product_id, name, required_qty, bundle_price_cents, start_at, end_at, enabled, priority",
+    )
+    .bind(name.trim())
+    .bind(required_qty)
+    .bind(bundle_price_cents)
+    .bind(priority)
+    .bind(enabled)
+    .bind(existing_id)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| format!("Error al actualizar promoción: {}", e))?;
+
+    Ok(PriceRuleAdmin {
+        id: row.get("id"),
+        product_id: row.get("product_id"),
+        name: row.get("name"),
+        required_qty: row.get("required_qty"),
+        bundle_price_cents: row.get("bundle_price_cents"),
+        start_at: row.get("start_at"),
+        end_at: row.get("end_at"),
+        enabled: row.get("enabled"),
+        priority: row.get("priority"),
+    })
+}
+
+/// Activa/desactiva una promoción.
+///
+/// Solo OWNER.
+#[tauri::command]
+pub async fn toggle_price_rule_admin(
+    db: State<'_, Db>,
+    pin: String,
+    rule_id: i64,
+) -> Result<PriceRuleAdmin, String> {
+    let _user_id = validate_owner(db.pool(), &pin).await?;
+
+    let row = sqlx::query(
+        "UPDATE price_rules
+         SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END
+         WHERE id = ?
+         RETURNING id, product_id, name, required_qty, bundle_price_cents, start_at, end_at, enabled, priority",
+    )
+    .bind(rule_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| format!("Error al cambiar estado de promoción: {}", e))?
+    .ok_or("Promoción no encontrada")?;
+
+    Ok(PriceRuleAdmin {
+        id: row.get("id"),
+        product_id: row.get("product_id"),
+        name: row.get("name"),
+        required_qty: row.get("required_qty"),
+        bundle_price_cents: row.get("bundle_price_cents"),
+        start_at: row.get("start_at"),
+        end_at: row.get("end_at"),
+        enabled: row.get("enabled"),
+        priority: row.get("priority"),
     })
 }

@@ -187,10 +187,13 @@ pub fn run() {
             sales::search_products,
             sales::get_product_by_barcode,
             sales::list_products,
+            sales::list_product_price_rules,
             sales::create_sale,
             sales::add_sale_line,
             sales::update_sale_line_qty,
             sales::remove_sale_line,
+            sales::apply_price_rule_to_line,
+            sales::remove_price_rule_from_line,
             sales::finalize_sale,
             sales::get_sale_detail,
             sales::get_session_sales,
@@ -201,6 +204,10 @@ pub fn run() {
             inventory::update_product,
             inventory::toggle_product_active,
             inventory::adjust_stock,
+            inventory::list_product_price_rules_admin,
+            inventory::create_price_rule_admin,
+            inventory::update_price_rule_admin,
+            inventory::toggle_price_rule_admin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -88,6 +88,10 @@ export interface SaleLineResult {
   unit_price_cents: number;
   line_total_cents: number;
   cost_at_sale_cents: number;
+  price_rule_id: number | null;
+  rule_name: string | null;
+  rule_required_qty: number | null;
+  rule_bundle_price_cents: number | null;
 }
 
 export interface SaleResult {
@@ -105,6 +109,18 @@ export interface SessionSalesSummary {
   sales: SaleBrief[];
   count: number;
   total_cents: number;
+}
+
+export interface PriceRule {
+  id: number;
+  product_id: number;
+  name: string;
+  required_qty: number;
+  bundle_price_cents: number;
+  start_at: string | null;
+  end_at: string | null;
+  enabled: number;
+  priority: number;
 }
 
 export interface SaleBrief {

@@ -1,6 +1,6 @@
 // API functions para gestión de productos e inventario
 import { invoke } from '@tauri-apps/api/core';
-import type { ProductDetail, StockResult, AdjustResult } from '$lib/types';
+import type { ProductDetail, StockResult, AdjustResult, PriceRule } from '$lib/types';
 
 /** Lista todos los productos (activos e inactivos) — solo OWNER */
 export async function listAllProductsAdmin(pin: string): Promise<ProductDetail[]> {
@@ -96,4 +96,65 @@ export async function adjustStock(
     qty,
     reason
   });
+}
+
+/** Lista promociones de un producto para administración (OWNER) */
+export async function listProductPriceRulesAdmin(
+  pin: string,
+  productId: number
+): Promise<PriceRule[]> {
+  return await invoke<PriceRule[]>('list_product_price_rules_admin', {
+    pin,
+    productId
+  });
+}
+
+/** Crea una promoción para un producto (OWNER) */
+export async function createPriceRuleAdmin(
+  pin: string,
+  productId: number,
+  name: string,
+  requiredQty: number,
+  bundlePriceCents: number,
+  priority: number,
+  enabled: number
+): Promise<PriceRule> {
+  return await invoke<PriceRule>('create_price_rule_admin', {
+    pin,
+    productId,
+    name,
+    requiredQty,
+    bundlePriceCents,
+    priority,
+    enabled
+  });
+}
+
+/** Edita una promoción existente (OWNER) */
+export async function updatePriceRuleAdmin(
+  pin: string,
+  ruleId: number,
+  name: string,
+  requiredQty: number,
+  bundlePriceCents: number,
+  priority: number,
+  enabled: number
+): Promise<PriceRule> {
+  return await invoke<PriceRule>('update_price_rule_admin', {
+    pin,
+    ruleId,
+    name,
+    requiredQty,
+    bundlePriceCents,
+    priority,
+    enabled
+  });
+}
+
+/** Activa/desactiva una promoción (OWNER) */
+export async function togglePriceRuleAdmin(
+  pin: string,
+  ruleId: number
+): Promise<PriceRule> {
+  return await invoke<PriceRule>('toggle_price_rule_admin', { pin, ruleId });
 }

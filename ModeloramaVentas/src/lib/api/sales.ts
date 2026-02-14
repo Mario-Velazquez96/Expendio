@@ -5,7 +5,8 @@ import type {
   CreateSaleResult,
   SaleLineResult,
   SaleResult,
-  SessionSalesSummary
+  SessionSalesSummary,
+  PriceRule
 } from '$lib/types';
 
 /** Busca productos por nombre o código de barras */
@@ -84,4 +85,35 @@ export async function getSessionSales(
   sessionId: number
 ): Promise<SessionSalesSummary> {
   return await invoke<SessionSalesSummary>('get_session_sales', { sessionId });
+}
+
+/** Lista reglas de precio activas para un producto */
+export async function listProductPriceRules(
+  productId: number
+): Promise<PriceRule[]> {
+  return await invoke<PriceRule[]>('list_product_price_rules', { productId });
+}
+
+/** Aplica una promo manual a una linea del carrito */
+export async function applyPriceRuleToLine(
+  pin: string,
+  lineId: number,
+  ruleId: number
+): Promise<SaleLineResult[]> {
+  return await invoke<SaleLineResult[]>('apply_price_rule_to_line', {
+    pin,
+    lineId,
+    ruleId
+  });
+}
+
+/** Quita promo de una linea y la regresa a precio normal */
+export async function removePriceRuleFromLine(
+  pin: string,
+  lineId: number
+): Promise<SaleLineResult> {
+  return await invoke<SaleLineResult>('remove_price_rule_from_line', {
+    pin,
+    lineId
+  });
 }

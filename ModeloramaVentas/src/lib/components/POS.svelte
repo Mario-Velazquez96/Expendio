@@ -7,10 +7,13 @@
     addSaleLine,
     updateSaleLineQty,
     removeSaleLine,
-    finalizeSale
+    finalizeSale,
+    listProductPriceRules,
+    applyPriceRuleToLine,
+    removePriceRuleFromLine
   } from '$lib/api/sales';
   import { formatMoney } from '$lib/helpers/money';
-  import type { CashSession, Product, SaleLineResult } from '$lib/types';
+  import type { CashSession, Product, SaleLineResult, PriceRule } from '$lib/types';
 
   let { session }: { session: CashSession } = $props();
 
@@ -24,6 +27,9 @@
   let saleLines = $state<SaleLineResult[]>([]);
   let operationLoading = $state(false);
   let error = $state('');
+  let promoRules = $state<PriceRule[]>([]);
+  let promoRulesLoading = $state(false);
+  let promoTargetLine = $state<SaleLineResult | null>(null);
 
   // ── Retroalimentación de venta completada ──
   let lastSaleTotal = $state<number | null>(null);
@@ -145,6 +151,65 @@
     }
   }
 
+  async function openPromoPicker(line: SaleLineResult) {
+    if (operationLoading) return;
+    promoTargetLine = line;
+    promoRules = [];
+    promoRulesLoading = true;
+    error = '';
+
+    try {
+      promoRules = await listProductPriceRules(line.product_id);
+    } catch (e) {
+      promoTargetLine = null;
+      error = String(e);
+    } finally {
+      promoRulesLoading = false;
+    }
+  }
+
+  function closePromoPicker() {
+    promoTargetLine = null;
+    promoRules = [];
+    promoRulesLoading = false;
+  }
+
+  async function handleApplyPromo(line: SaleLineResult, rule: PriceRule) {
+    if (operationLoading) return;
+    operationLoading = true;
+    error = '';
+
+    try {
+      saleLines = await applyPriceRuleToLine(authStore.pin, line.id, rule.id);
+      closePromoPicker();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      operationLoading = false;
+    }
+  }
+
+  async function handleApplyPromoFromPicker(rule: PriceRule) {
+    if (!promoTargetLine) return;
+    await handleApplyPromo(promoTargetLine, rule);
+  }
+
+  async function handleRemovePromo(line: SaleLineResult) {
+    if (operationLoading) return;
+    operationLoading = true;
+    error = '';
+
+    try {
+      const updated = await removePriceRuleFromLine(authStore.pin, line.id);
+      const idx = saleLines.findIndex(l => l.id === line.id);
+      if (idx >= 0) saleLines[idx] = updated;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      operationLoading = false;
+    }
+  }
+
   async function handleFinalize() {
     if (operationLoading || !currentSaleId || saleLines.length === 0) return;
     operationLoading = true;
@@ -163,6 +228,7 @@
       // Resetear para nueva venta
       currentSaleId = null;
       saleLines = [];
+      closePromoPicker();
 
       // Recargar productos para stock actualizado
       await loadProducts();
@@ -177,6 +243,7 @@
     // Abandonar venta DRAFT (queda en BD pero no afecta nada)
     currentSaleId = null;
     saleLines = [];
+    closePromoPicker();
     error = '';
   }
 </script>
@@ -259,24 +326,39 @@
           <div class="cart-line">
             <div class="line-info">
               <span class="line-name">{line.product_name}</span>
-              <span class="line-unit-price">{formatMoney(line.unit_price_cents)} c/u</span>
+              <span class="line-unit-price">
+                {#if line.price_rule_id}
+                  Promo: {line.rule_name ?? `${line.rule_required_qty}x`} ({line.rule_required_qty} x {formatMoney(line.rule_bundle_price_cents ?? 0)})
+                {:else}
+                  {formatMoney(line.unit_price_cents)} c/u
+                {/if}
+              </span>
             </div>
             <div class="line-qty">
               <button
                 class="qty-btn"
                 onclick={() => handleDecrement(line)}
-                disabled={operationLoading}
+                disabled={operationLoading || !!line.price_rule_id}
               >−</button>
               <span class="qty-value">{line.qty}</span>
               <button
                 class="qty-btn"
                 onclick={() => handleIncrement(line)}
-                disabled={operationLoading}
+                disabled={operationLoading || !!line.price_rule_id}
               >+</button>
             </div>
             <div class="line-total">
               {formatMoney(line.line_total_cents)}
             </div>
+            <button
+              class="line-promo"
+              class:active={!!line.price_rule_id}
+              onclick={() => line.price_rule_id ? handleRemovePromo(line) : openPromoPicker(line)}
+              disabled={operationLoading}
+              title={line.price_rule_id ? 'Quitar promo' : 'Aplicar promo'}
+            >
+              {line.price_rule_id ? 'Quitar promo' : 'Aplicar promo'}
+            </button>
             <button
               class="line-remove"
               onclick={() => handleRemoveLine(line)}
@@ -314,6 +396,51 @@
       </div>
     </div>
   </div>
+
+  {#if promoTargetLine}
+    <div
+      class="promo-overlay"
+      role="button"
+      tabindex="0"
+      onclick={(e) => {
+        if (e.target === e.currentTarget) closePromoPicker();
+      }}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') closePromoPicker();
+      }}
+    >
+      <div class="promo-modal" role="dialog" aria-modal="true">
+        <h3>Aplicar promo</h3>
+        <p class="promo-product">{promoTargetLine.product_name} - {promoTargetLine.qty} pzas</p>
+
+        {#if promoRulesLoading}
+          <p class="promo-empty">Cargando promociones...</p>
+        {:else if promoRules.length === 0}
+          <p class="promo-empty">No hay promociones activas para este producto.</p>
+        {:else}
+          <div class="promo-list">
+            {#each promoRules as rule (rule.id)}
+              <button
+                class="promo-item"
+                onclick={() => handleApplyPromoFromPicker(rule)}
+                disabled={operationLoading || promoTargetLine.qty < rule.required_qty}
+              >
+                <span class="promo-name">{rule.name}</span>
+                <span class="promo-detail">
+                  {rule.required_qty} x {formatMoney(rule.bundle_price_cents)}
+                </span>
+                {#if promoTargetLine.qty < rule.required_qty}
+                  <span class="promo-warning">Cantidad insuficiente</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <button class="promo-close" onclick={closePromoPicker}>Cerrar</button>
+      </div>
+    </div>
+  {/if}
 
   <!-- ═══ Overlay de venta completada ═══ -->
   {#if lastSaleTotal !== null}
@@ -567,7 +694,7 @@
 
   .cart-line {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: 1fr auto auto auto auto;
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem 1.25rem;
@@ -665,6 +792,34 @@
   }
 
   .line-remove:disabled {
+    cursor: not-allowed;
+  }
+
+  .line-promo {
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.12);
+    color: #93c5fd;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.35rem 0.55rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .line-promo.active {
+    border-color: rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.14);
+    color: #86efac;
+  }
+
+  .line-promo:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+
+  .line-promo:disabled {
+    opacity: 0.45;
     cursor: not-allowed;
   }
 
@@ -799,5 +954,98 @@
     font-size: 2.5rem;
     font-weight: 800;
     margin: 0;
+  }
+
+  .promo-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 90;
+  }
+
+  .promo-modal {
+    width: 420px;
+    max-width: calc(100% - 2rem);
+    background: #1a1f33;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    padding: 1rem;
+  }
+
+  .promo-modal h3 {
+    margin: 0;
+    color: #fff;
+  }
+
+  .promo-product {
+    margin: 0.35rem 0 1rem;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 0.85rem;
+  }
+
+  .promo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .promo-item {
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 10px;
+    padding: 0.7rem;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .promo-item:hover:not(:disabled) {
+    border-color: rgba(245, 158, 11, 0.45);
+    background: rgba(245, 158, 11, 0.1);
+  }
+
+  .promo-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .promo-name {
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  .promo-detail {
+    font-size: 0.8rem;
+    color: #fbbf24;
+  }
+
+  .promo-warning {
+    font-size: 0.75rem;
+    color: #f87171;
+  }
+
+  .promo-empty {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.85rem;
+    margin: 0.5rem 0 1rem;
+  }
+
+  .promo-close {
+    margin-top: 0.85rem;
+    width: 100%;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    border-radius: 9px;
+    padding: 0.65rem;
+    cursor: pointer;
   }
 </style>

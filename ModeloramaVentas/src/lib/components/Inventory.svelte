@@ -7,10 +7,14 @@
     addStock,
     adjustStock,
     updateProduct,
-    toggleProductActive
+    toggleProductActive,
+    listProductPriceRulesAdmin,
+    createPriceRuleAdmin,
+    updatePriceRuleAdmin,
+    togglePriceRuleAdmin
   } from '$lib/api/inventory';
   import { formatMoney, pesosToCents, centsToPesos } from '$lib/helpers/money';
-  import type { ProductDetail } from '$lib/types';
+  import type { ProductDetail, PriceRule } from '$lib/types';
 
   // ── Estado principal ──
   let products = $state<ProductDetail[]>([]);
@@ -21,7 +25,7 @@
   let filterActive = $state<'all' | 'active' | 'inactive'>('all');
 
   // ── Modal ──
-  type ModalMode = 'none' | 'create' | 'edit' | 'stock' | 'adjust';
+  type ModalMode = 'none' | 'create' | 'edit' | 'stock' | 'adjust' | 'promos';
   let modalMode = $state<ModalMode>('none');
   let modalLoading = $state(false);
   let modalError = $state('');
@@ -44,6 +48,16 @@
   // ── Form fields (adjust stock) ──
   let fAdjustQty = $state('');
   let fAdjustReason = $state('');
+
+  // ── Form fields (promos) ──
+  let promoRules = $state<PriceRule[]>([]);
+  let promoLoading = $state(false);
+  let editingPromoId = $state<number | null>(null);
+  let fPromoName = $state('');
+  let fPromoRequiredQty = $state('');
+  let fPromoBundlePrice = $state('');
+  let fPromoPriority = $state('0');
+  let fPromoEnabled = $state(true);
 
   // ── Computed ──
   let filteredProducts = $derived.by(() => {
@@ -289,9 +303,123 @@
     }
   }
 
+  // ── Promos ──
+  async function openPromosModal(product: ProductDetail) {
+    modalMode = 'promos';
+    modalError = '';
+    selectedProduct = product;
+    promoLoading = true;
+    editingPromoId = null;
+    resetPromoForm();
+
+    try {
+      promoRules = await listProductPriceRulesAdmin(authStore.pin, product.id);
+    } catch (e) {
+      modalError = String(e);
+    } finally {
+      promoLoading = false;
+    }
+  }
+
+  function resetPromoForm() {
+    fPromoName = '';
+    fPromoRequiredQty = '';
+    fPromoBundlePrice = '';
+    fPromoPriority = '0';
+    fPromoEnabled = true;
+  }
+
+  function startEditPromo(rule: PriceRule) {
+    editingPromoId = rule.id;
+    fPromoName = rule.name;
+    fPromoRequiredQty = rule.required_qty.toString();
+    fPromoBundlePrice = centsToPesos(rule.bundle_price_cents).toString();
+    fPromoPriority = rule.priority.toString();
+    fPromoEnabled = rule.enabled === 1;
+    modalError = '';
+  }
+
+  function cancelEditPromo() {
+    editingPromoId = null;
+    resetPromoForm();
+    modalError = '';
+  }
+
+  async function handleSavePromo(e: Event) {
+    e.preventDefault();
+    if (!selectedProduct) return;
+    modalError = '';
+
+    const requiredQty = parseInt(fPromoRequiredQty);
+    const bundlePrice = parseFloat(fPromoBundlePrice);
+    const priority = parseInt(fPromoPriority) || 0;
+    const enabled = fPromoEnabled ? 1 : 0;
+
+    if (!fPromoName.trim()) {
+      modalError = 'Ingresa nombre de la promoción';
+      return;
+    }
+    if (isNaN(requiredQty) || requiredQty <= 1) {
+      modalError = 'La cantidad requerida debe ser mayor a 1';
+      return;
+    }
+    if (isNaN(bundlePrice) || bundlePrice < 0) {
+      modalError = 'Ingresa un precio de promo válido';
+      return;
+    }
+
+    modalLoading = true;
+    try {
+      if (editingPromoId) {
+        await updatePriceRuleAdmin(
+          authStore.pin,
+          editingPromoId,
+          fPromoName.trim(),
+          requiredQty,
+          pesosToCents(bundlePrice),
+          priority,
+          enabled
+        );
+        showSuccess('Promoción actualizada');
+      } else {
+        await createPriceRuleAdmin(
+          authStore.pin,
+          selectedProduct.id,
+          fPromoName.trim(),
+          requiredQty,
+          pesosToCents(bundlePrice),
+          priority,
+          enabled
+        );
+        showSuccess('Promoción creada');
+      }
+
+      promoRules = await listProductPriceRulesAdmin(authStore.pin, selectedProduct.id);
+      cancelEditPromo();
+    } catch (e) {
+      modalError = String(e);
+    } finally {
+      modalLoading = false;
+    }
+  }
+
+  async function handleTogglePromo(rule: PriceRule) {
+    if (!selectedProduct) return;
+    modalError = '';
+    try {
+      await togglePriceRuleAdmin(authStore.pin, rule.id);
+      promoRules = await listProductPriceRulesAdmin(authStore.pin, selectedProduct.id);
+    } catch (e) {
+      modalError = String(e);
+    }
+  }
+
   function closeModal() {
     modalMode = 'none';
     selectedProduct = null;
+    promoRules = [];
+    editingPromoId = null;
+    resetPromoForm();
   }
 </script>
 
@@ -418,6 +546,9 @@
                     <button class="action-btn" onclick={() => openEditModal(product)} title="Editar">
                       ✏️
                     </button>
+                    <button class="action-btn promo-btn" onclick={() => openPromosModal(product)} title="Promociones">
+                      🎯
+                    </button>
                   {/if}
                   {#if product.active === 1}
                     <button class="action-btn stock-btn" onclick={() => openStockModal(product)} title="Agregar stock">
@@ -441,8 +572,8 @@
 
 <!-- ═══ MODAL: Crear / Editar Producto ═══ -->
 {#if modalMode === 'create' || modalMode === 'edit'}
-  <div class="modal-overlay" onclick={closeModal} role="dialog">
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="document">
+  <div class="modal-overlay">
+    <div class="modal-card">
       <h3>{modalMode === 'create' ? '➕ Nuevo Producto' : `✏️ Editar: ${selectedProduct?.name}`}</h3>
 
       <form onsubmit={modalMode === 'create' ? handleCreate : handleEdit}>
@@ -453,7 +584,7 @@
 
         <div class="form-row-2">
           <div class="form-field">
-            <label>Categoría *</label>
+            <span class="field-label">Categoría *</span>
             <div class="toggle-group">
               <button type="button" class="toggle-opt" class:active={fCategory === 'BEER'} onclick={() => fCategory = 'BEER'}>🍺 Cerveza</button>
               <button type="button" class="toggle-opt" class:active={fCategory === 'PRODUCT'} onclick={() => fCategory = 'PRODUCT'}>📦 Producto</button>
@@ -461,7 +592,7 @@
           </div>
           {#if fCategory === 'BEER'}
             <div class="form-field">
-              <label>Envase (pzas/caja)</label>
+              <span class="field-label">Envase (pzas/caja)</span>
               <div class="toggle-group">
                 <button type="button" class="toggle-opt" class:active={fUnitsPerCase === 12} onclick={() => fUnitsPerCase = 12}>Botella (12)</button>
                 <button type="button" class="toggle-opt" class:active={fUnitsPerCase === 24} onclick={() => fUnitsPerCase = 24}>Lata (24)</button>
@@ -523,8 +654,8 @@
 
 <!-- ═══ MODAL: Agregar Stock ═══ -->
 {#if modalMode === 'stock' && selectedProduct}
-  <div class="modal-overlay" onclick={closeModal} role="dialog">
-    <div class="modal-card small" onclick={(e) => e.stopPropagation()} role="document">
+  <div class="modal-overlay">
+    <div class="modal-card small">
       <h3>📥 Agregar Stock</h3>
       <p class="stock-product-name">{selectedProduct.name}</p>
       <p class="stock-current">Stock actual: <strong>{selectedProduct.on_hand}</strong> piezas</p>
@@ -577,8 +708,8 @@
 
 <!-- ═══ MODAL: Ajustar Stock (restar) ═══ -->
 {#if modalMode === 'adjust' && selectedProduct}
-  <div class="modal-overlay" onclick={closeModal} role="dialog">
-    <div class="modal-card small" onclick={(e) => e.stopPropagation()} role="document">
+  <div class="modal-overlay">
+    <div class="modal-card small">
       <h3>📤 Ajustar Stock</h3>
       <p class="stock-product-name">{selectedProduct.name}</p>
       <p class="stock-current">Stock actual: <strong>{selectedProduct.on_hand}</strong> piezas</p>
@@ -631,6 +762,94 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+{/if}
+
+<!-- ═══ MODAL: Promociones ═══ -->
+{#if modalMode === 'promos' && selectedProduct}
+  <div class="modal-overlay">
+    <div class="modal-card">
+      <h3>🎯 Promociones: {selectedProduct.name}</h3>
+
+      <div class="promo-section">
+        <h4>{editingPromoId ? 'Editar promoción' : 'Nueva promoción'}</h4>
+        <form onsubmit={handleSavePromo}>
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="f-promo-name">Nombre *</label>
+              <input id="f-promo-name" type="text" bind:value={fPromoName} placeholder="Ej: Promo 6 cervezas" disabled={modalLoading} />
+            </div>
+            <div class="form-field">
+              <label for="f-promo-qty">Cantidad requerida *</label>
+              <input id="f-promo-qty" type="number" min="2" bind:value={fPromoRequiredQty} placeholder="Ej: 6" disabled={modalLoading} />
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="f-promo-price">Precio promo ($) *</label>
+              <input id="f-promo-price" type="number" step="0.01" min="0" bind:value={fPromoBundlePrice} placeholder="Ej: 110.00" disabled={modalLoading} />
+            </div>
+            <div class="form-field">
+              <label for="f-promo-priority">Prioridad</label>
+              <input id="f-promo-priority" type="number" bind:value={fPromoPriority} disabled={modalLoading} />
+            </div>
+          </div>
+
+          <div class="promo-enabled">
+            <input id="f-promo-enabled" type="checkbox" bind:checked={fPromoEnabled} disabled={modalLoading} />
+            <label for="f-promo-enabled">Promoción habilitada</label>
+          </div>
+
+          <div class="modal-actions">
+            {#if editingPromoId}
+              <button type="button" class="btn-modal-cancel" onclick={cancelEditPromo} disabled={modalLoading}>
+                Cancelar edición
+              </button>
+            {/if}
+            <button type="submit" class="btn-modal-ok" disabled={modalLoading}>
+              {modalLoading ? 'Guardando...' : (editingPromoId ? 'Guardar promoción' : 'Crear promoción')}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div class="promo-section">
+        <h4>Promociones registradas</h4>
+        {#if promoLoading}
+          <p class="promo-empty">Cargando promociones...</p>
+        {:else if promoRules.length === 0}
+          <p class="promo-empty">No hay promociones registradas para este producto.</p>
+        {:else}
+          <div class="promo-list">
+            {#each promoRules as rule (rule.id)}
+              <div class="promo-row" class:disabled={rule.enabled === 0}>
+                <div class="promo-info">
+                  <span class="promo-title">{rule.name}</span>
+                  <span class="promo-meta">
+                    {rule.required_qty} pzas por {formatMoney(rule.bundle_price_cents)} · prioridad {rule.priority}
+                  </span>
+                </div>
+                <div class="promo-actions">
+                  <button class="action-btn" onclick={() => startEditPromo(rule)} title="Editar">✏️</button>
+                  <button class="action-btn" onclick={() => handleTogglePromo(rule)} title={rule.enabled ? 'Desactivar' : 'Activar'}>
+                    {rule.enabled ? '🚫' : '✅'}
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      {#if modalError}
+        <div class="modal-error">⚠️ {modalError}</div>
+      {/if}
+
+      <div class="modal-actions">
+        <button type="button" class="btn-modal-cancel" onclick={closeModal}>Cerrar</button>
+      </div>
     </div>
   </div>
 {/if}
@@ -933,6 +1152,10 @@
     background: rgba(239,68,68,0.15);
     border-color: rgba(239,68,68,0.3);
   }
+  .action-btn.promo-btn:hover {
+    background: rgba(59,130,246,0.18);
+    border-color: rgba(59,130,246,0.35);
+  }
 
   /* ═══ Modal ═══ */
   .modal-overlay {
@@ -990,7 +1213,7 @@
     font-weight: 500;
     margin-bottom: 0.4rem;
   }
-  .form-field input, .form-field textarea {
+  .form-field input {
     width: 100%;
     padding: 0.7rem 0.85rem;
     font-size: 0.95rem;
@@ -1009,13 +1232,21 @@
   /* hide number spinners */
   .form-field input[type="number"]::-webkit-inner-spin-button,
   .form-field input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-  .form-field input[type="number"] { -moz-appearance: textfield; }
+  .form-field input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 
   .field-hint {
     display: block;
     font-size: 0.75rem;
     color: rgba(245,158,11,0.7);
     margin-top: 0.3rem;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.55);
+    font-weight: 500;
+    margin-bottom: 0.4rem;
   }
 
   .form-row-2 {
@@ -1118,5 +1349,79 @@
 
   .adjust-hint {
     color: rgba(239,68,68,0.8) !important;
+  }
+
+  .promo-section {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 0.9rem;
+    margin-bottom: 1rem;
+  }
+
+  .promo-section h4 {
+    margin: 0 0 0.8rem;
+    color: #fff;
+    font-size: 0.95rem;
+  }
+
+  .promo-enabled {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+    color: rgba(255,255,255,0.7);
+    font-size: 0.85rem;
+  }
+
+  .promo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .promo-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.03);
+  }
+
+  .promo-row.disabled {
+    opacity: 0.45;
+  }
+
+  .promo-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.15rem;
+  }
+
+  .promo-title {
+    color: #fff;
+    font-size: 0.86rem;
+    font-weight: 600;
+  }
+
+  .promo-meta {
+    color: rgba(255,255,255,0.5);
+    font-size: 0.78rem;
+  }
+
+  .promo-actions {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .promo-empty {
+    color: rgba(255,255,255,0.45);
+    font-size: 0.85rem;
+    margin: 0;
   }
 </style>

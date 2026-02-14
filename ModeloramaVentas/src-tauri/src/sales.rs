@@ -38,6 +38,10 @@ pub struct SaleLineResult {
     pub unit_price_cents: i64,
     pub line_total_cents: i64,
     pub cost_at_sale_cents: i64,
+    pub price_rule_id: Option<i64>,
+    pub rule_name: Option<String>,
+    pub rule_required_qty: Option<i64>,
+    pub rule_bundle_price_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +71,19 @@ pub struct SaleBrief {
     pub payment_method: String,
     pub user_id: i64,
     pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PriceRule {
+    pub id: i64,
+    pub product_id: i64,
+    pub name: String,
+    pub required_qty: i64,
+    pub bundle_price_cents: i64,
+    pub start_at: Option<String>,
+    pub end_at: Option<String>,
+    pub enabled: i64,
+    pub priority: i64,
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -103,14 +120,43 @@ fn row_to_sale_line(r: &sqlx::sqlite::SqliteRow) -> SaleLineResult {
         unit_price_cents: r.get("unit_price_cents"),
         line_total_cents: r.get("line_total_cents"),
         cost_at_sale_cents: r.get("cost_at_sale_cents"),
+        price_rule_id: r.get("price_rule_id"),
+        rule_name: r.get("rule_name"),
+        rule_required_qty: r.get("rule_required_qty"),
+        rule_bundle_price_cents: r.get("rule_bundle_price_cents"),
     }
 }
 
 const SALE_LINE_SELECT: &str = "
     SELECT sl.id, sl.sale_id, sl.product_id, p.name as product_name,
-           sl.qty, sl.unit_price_cents, sl.line_total_cents, sl.cost_at_sale_cents
+           sl.qty, sl.unit_price_cents, sl.line_total_cents, sl.cost_at_sale_cents,
+           sl.price_rule_id, pr.name as rule_name, sl.rule_required_qty, sl.rule_bundle_price_cents
     FROM sale_lines sl
-    JOIN products p ON sl.product_id = p.id";
+    JOIN products p ON sl.product_id = p.id
+    LEFT JOIN price_rules pr ON sl.price_rule_id = pr.id";
+
+fn calc_line_total(
+    qty: i64,
+    unit_price_cents: i64,
+    rule_required_qty: Option<i64>,
+    rule_bundle_price_cents: Option<i64>,
+) -> Result<i64, String> {
+    match (rule_required_qty, rule_bundle_price_cents) {
+        (Some(required_qty), Some(bundle_price_cents)) => {
+            if required_qty <= 1 {
+                return Err("La regla de promoción tiene required_qty inválido".into());
+            }
+            if qty <= 0 || qty % required_qty != 0 {
+                return Err(format!(
+                    "Cantidad inválida para promo. qty={} debe ser múltiplo de {}",
+                    qty, required_qty
+                ));
+            }
+            Ok((qty / required_qty) * bundle_price_cents)
+        }
+        _ => Ok(unit_price_cents * qty),
+    }
+}
 
 /// Valida un PIN y devuelve el user_id correspondiente.
 async fn validate_pin(pool: &sqlx::SqlitePool, pin: &str) -> Result<i64, String> {
@@ -230,6 +276,266 @@ pub async fn list_products(db: State<'_, Db>) -> Result<Vec<Product>, String> {
         .map_err(|e| format!("Error al listar productos: {}", e))?;
 
     Ok(rows.iter().map(row_to_product).collect())
+}
+
+/// Lista reglas de promoción habilitadas para un producto.
+#[tauri::command]
+pub async fn list_product_price_rules(
+    db: State<'_, Db>,
+    product_id: i64,
+) -> Result<Vec<PriceRule>, String> {
+    let rows = sqlx::query(
+        "SELECT id, product_id, name, required_qty, bundle_price_cents, start_at, end_at, enabled, priority
+         FROM price_rules
+         WHERE product_id = ?
+           AND enabled = 1
+           AND (start_at IS NULL OR start_at <= datetime('now'))
+           AND (end_at IS NULL OR end_at >= datetime('now'))
+         ORDER BY required_qty DESC, priority DESC, id DESC",
+    )
+    .bind(product_id)
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| format!("Error al listar promociones: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|r| PriceRule {
+            id: r.get("id"),
+            product_id: r.get("product_id"),
+            name: r.get("name"),
+            required_qty: r.get("required_qty"),
+            bundle_price_cents: r.get("bundle_price_cents"),
+            start_at: r.get("start_at"),
+            end_at: r.get("end_at"),
+            enabled: r.get("enabled"),
+            priority: r.get("priority"),
+        })
+        .collect())
+}
+
+/// Aplica una promo manual a una línea normal (sin promo).
+///
+/// Regla:
+///  - Debe existir línea DRAFT + sesión OPEN.
+///  - La regla debe pertenecer al mismo producto y estar vigente.
+///  - Si hay sobrante, se divide en línea promo + línea normal.
+#[tauri::command]
+pub async fn apply_price_rule_to_line(
+    db: State<'_, Db>,
+    pin: String,
+    line_id: i64,
+    rule_id: i64,
+) -> Result<Vec<SaleLineResult>, String> {
+    let _user_id = validate_pin(db.pool(), &pin).await?;
+
+    let line_row = sqlx::query(
+        "SELECT sl.id, sl.sale_id, sl.product_id, sl.qty, sl.unit_price_cents, sl.cost_at_sale_cents,
+                sl.price_rule_id, p.name as product_name, COALESCE(ib.on_hand, 0) as on_hand
+         FROM sale_lines sl
+         JOIN products p ON sl.product_id = p.id
+         LEFT JOIN inventory_balances ib ON p.id = ib.product_id
+         WHERE sl.id = ?",
+    )
+    .bind(line_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| format!("Error al buscar línea: {}", e))?
+    .ok_or("Línea de venta no encontrada")?;
+
+    let sale_id: i64 = line_row.get("sale_id");
+    let product_id: i64 = line_row.get("product_id");
+    let qty: i64 = line_row.get("qty");
+    let unit_price_cents: i64 = line_row.get("unit_price_cents");
+    let cost_at_sale_cents: i64 = line_row.get("cost_at_sale_cents");
+    let product_name: String = line_row.get("product_name");
+    let on_hand: i64 = line_row.get("on_hand");
+    let current_price_rule_id: Option<i64> = line_row.get("price_rule_id");
+
+    if current_price_rule_id.is_some() {
+        return Err("La línea ya tiene promoción aplicada".into());
+    }
+
+    validate_draft_sale(db.pool(), sale_id).await?;
+
+    if on_hand < qty {
+        return Err(format!(
+            "Stock insuficiente para '{}'. Disponible: {}, En línea: {}",
+            product_name, on_hand, qty
+        ));
+    }
+
+    let rule_row = sqlx::query(
+        "SELECT id, product_id, name, required_qty, bundle_price_cents
+         FROM price_rules
+         WHERE id = ?
+           AND enabled = 1
+           AND (start_at IS NULL OR start_at <= datetime('now'))
+           AND (end_at IS NULL OR end_at >= datetime('now'))",
+    )
+    .bind(rule_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| format!("Error al buscar promoción: {}", e))?
+    .ok_or("Promoción no encontrada o no vigente")?;
+
+    let rule_product_id: i64 = rule_row.get("product_id");
+    let rule_name: String = rule_row.get("name");
+    let rule_required_qty: i64 = rule_row.get("required_qty");
+    let rule_bundle_price_cents: i64 = rule_row.get("bundle_price_cents");
+
+    if rule_product_id != product_id {
+        return Err("La promoción no corresponde al producto de la línea".into());
+    }
+
+    let bundle_count = qty / rule_required_qty;
+    if bundle_count <= 0 {
+        return Err(format!(
+            "La promo '{}' requiere mínimo {} piezas",
+            rule_name, rule_required_qty
+        ));
+    }
+
+    let promo_qty = bundle_count * rule_required_qty;
+    let remainder_qty = qty - promo_qty;
+    let promo_total = calc_line_total(
+        promo_qty,
+        unit_price_cents,
+        Some(rule_required_qty),
+        Some(rule_bundle_price_cents),
+    )?;
+
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| format!("Error al iniciar transacción: {}", e))?;
+
+    sqlx::query("DELETE FROM sale_lines WHERE id = ?")
+        .bind(line_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Error al reemplazar línea: {}", e))?;
+
+    sqlx::query(
+        "INSERT INTO sale_lines
+            (sale_id, product_id, qty, unit_price_cents, line_total_cents, cost_at_sale_cents,
+             price_rule_id, rule_required_qty, rule_bundle_price_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(sale_id)
+    .bind(product_id)
+    .bind(promo_qty)
+    .bind(unit_price_cents)
+    .bind(promo_total)
+    .bind(cost_at_sale_cents)
+    .bind(rule_id)
+    .bind(rule_required_qty)
+    .bind(rule_bundle_price_cents)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Error al crear línea promo: {}", e))?;
+
+    if remainder_qty > 0 {
+        let remainder_total = unit_price_cents * remainder_qty;
+        sqlx::query(
+            "INSERT INTO sale_lines
+                (sale_id, product_id, qty, unit_price_cents, line_total_cents, cost_at_sale_cents)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(sale_id)
+        .bind(product_id)
+        .bind(remainder_qty)
+        .bind(unit_price_cents)
+        .bind(remainder_total)
+        .bind(cost_at_sale_cents)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Error al crear línea sobrante: {}", e))?;
+    }
+
+    let line_rows = sqlx::query(&format!(
+        "{} WHERE sl.sale_id = ? ORDER BY sl.id",
+        SALE_LINE_SELECT
+    ))
+    .bind(sale_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("Error al consultar líneas: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Error al confirmar transacción: {}", e))?;
+
+    Ok(line_rows.iter().map(row_to_sale_line).collect())
+}
+
+/// Quita promoción de una línea promo y regresa total a precio normal.
+#[tauri::command]
+pub async fn remove_price_rule_from_line(
+    db: State<'_, Db>,
+    pin: String,
+    line_id: i64,
+) -> Result<SaleLineResult, String> {
+    let _user_id = validate_pin(db.pool(), &pin).await?;
+
+    let line_row = sqlx::query(
+        "SELECT sl.id, sl.sale_id, sl.product_id, sl.qty,
+                sl.unit_price_cents, sl.cost_at_sale_cents,
+                sl.price_rule_id, p.name as product_name
+         FROM sale_lines sl
+         JOIN products p ON sl.product_id = p.id
+         WHERE sl.id = ?",
+    )
+    .bind(line_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| format!("Error al buscar línea: {}", e))?
+    .ok_or("Línea de venta no encontrada")?;
+
+    let sale_id: i64 = line_row.get("sale_id");
+    validate_draft_sale(db.pool(), sale_id).await?;
+
+    let price_rule_id: Option<i64> = line_row.get("price_rule_id");
+    if price_rule_id.is_none() {
+        return Err("La línea no tiene promoción aplicada".into());
+    }
+
+    let qty: i64 = line_row.get("qty");
+    let unit_price_cents: i64 = line_row.get("unit_price_cents");
+    let cost_at_sale_cents: i64 = line_row.get("cost_at_sale_cents");
+    let line_total_cents = unit_price_cents * qty;
+    let product_id: i64 = line_row.get("product_id");
+    let product_name: String = line_row.get("product_name");
+
+    sqlx::query(
+        "UPDATE sale_lines
+         SET price_rule_id = NULL,
+             rule_required_qty = NULL,
+             rule_bundle_price_cents = NULL,
+             line_total_cents = ?
+         WHERE id = ?",
+    )
+    .bind(line_total_cents)
+    .bind(line_id)
+    .execute(db.pool())
+    .await
+    .map_err(|e| format!("Error al quitar promoción: {}", e))?;
+
+    Ok(SaleLineResult {
+        id: line_id,
+        sale_id,
+        product_id,
+        product_name,
+        qty,
+        unit_price_cents,
+        line_total_cents,
+        cost_at_sale_cents,
+        price_rule_id: None,
+        rule_name: None,
+        rule_required_qty: None,
+        rule_bundle_price_cents: None,
+    })
 }
 
 // ─── Commands: Flujo de venta ─────────────────────────────────────────────────
@@ -400,6 +706,10 @@ pub async fn add_sale_line(
         unit_price_cents: unit_price,
         line_total_cents: final_line_total,
         cost_at_sale_cents: cost,
+        price_rule_id: None,
+        rule_name: None,
+        rule_required_qty: None,
+        rule_bundle_price_cents: None,
     })
 }
 
@@ -427,10 +737,13 @@ pub async fn update_sale_line_qty(
     let line_row = sqlx::query(
         "SELECT sl.id, sl.sale_id, sl.product_id, sl.qty as old_qty,
                 sl.unit_price_cents, sl.cost_at_sale_cents,
+                sl.price_rule_id, pr.name as rule_name,
+                sl.rule_required_qty, sl.rule_bundle_price_cents,
                 p.name as product_name,
                 COALESCE(ib.on_hand, 0) as on_hand
          FROM sale_lines sl
          JOIN products p ON sl.product_id = p.id
+         LEFT JOIN price_rules pr ON sl.price_rule_id = pr.id
          LEFT JOIN inventory_balances ib ON p.id = ib.product_id
          WHERE sl.id = ?",
     )
@@ -449,6 +762,14 @@ pub async fn update_sale_line_qty(
     let cost: i64 = line_row.get("cost_at_sale_cents");
     let product_name: String = line_row.get("product_name");
     let product_id: i64 = line_row.get("product_id");
+    let price_rule_id: Option<i64> = line_row.get("price_rule_id");
+    let rule_name: Option<String> = line_row.get("rule_name");
+    let rule_required_qty: Option<i64> = line_row.get("rule_required_qty");
+    let rule_bundle_price_cents: Option<i64> = line_row.get("rule_bundle_price_cents");
+
+    if price_rule_id.is_some() {
+        return Err("La línea tiene promoción. Elimínala o quita promo para cambiar cantidad.".into());
+    }
 
     // Si sube la cantidad, validar stock
     if new_qty > old_qty && on_hand < new_qty {
@@ -477,6 +798,10 @@ pub async fn update_sale_line_qty(
         unit_price_cents: unit_price,
         line_total_cents: line_total,
         cost_at_sale_cents: cost,
+        price_rule_id,
+        rule_name,
+        rule_required_qty,
+        rule_bundle_price_cents,
     })
 }
 
@@ -568,10 +893,13 @@ pub async fn finalize_sale(
     let line_rows = sqlx::query(
         "SELECT sl.id, sl.sale_id, sl.product_id, sl.qty,
                 sl.unit_price_cents, sl.cost_at_sale_cents,
+                sl.price_rule_id, pr.name as rule_name,
+                sl.rule_required_qty, sl.rule_bundle_price_cents,
                 p.name as product_name,
                 COALESCE(ib.on_hand, 0) as on_hand
          FROM sale_lines sl
          JOIN products p ON sl.product_id = p.id
+         LEFT JOIN price_rules pr ON sl.price_rule_id = pr.id
          LEFT JOIN inventory_balances ib ON p.id = ib.product_id
          WHERE sl.sale_id = ?",
     )
@@ -622,8 +950,12 @@ pub async fn finalize_sale(
         let qty: i64 = row.get("qty");
         let unit_price: i64 = row.get("unit_price_cents");
         let cost: i64 = row.get("cost_at_sale_cents");
+        let price_rule_id: Option<i64> = row.get("price_rule_id");
+        let rule_name: Option<String> = row.get("rule_name");
+        let rule_required_qty: Option<i64> = row.get("rule_required_qty");
+        let rule_bundle_price_cents: Option<i64> = row.get("rule_bundle_price_cents");
 
-        let line_total = unit_price * qty;
+        let line_total = calc_line_total(qty, unit_price, rule_required_qty, rule_bundle_price_cents)?;
         total_cents += line_total;
 
         // Recalcular line_total_cents (no confiar en el valor previo)
@@ -658,6 +990,10 @@ pub async fn finalize_sale(
             unit_price_cents: unit_price,
             line_total_cents: line_total,
             cost_at_sale_cents: cost,
+            price_rule_id,
+            rule_name,
+            rule_required_qty,
+            rule_bundle_price_cents,
         });
     }
 
