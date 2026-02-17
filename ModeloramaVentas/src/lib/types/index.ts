@@ -123,6 +123,32 @@ export interface PriceRule {
   priority: number;
 }
 
+// ── Dashboard / Reportes ──────────────────────────────────────────────────────
+
+export interface DashboardDailyPoint {
+  day: string;
+  sales_cents: number;
+  profit_cents: number;
+  cash_difference_cents: number;
+}
+
+export interface DashboardTopProduct {
+  product_id: number;
+  product_name: string;
+  qty_sold: number;
+  sales_cents: number;
+}
+
+export interface DashboardSummary {
+  range_days: number;
+  today_sales_cents: number;
+  today_profit_cents: number;
+  today_cash_difference_cents: number;
+  days: DashboardDailyPoint[];
+  top_products: DashboardTopProduct[];
+  top_products_today: DashboardTopProduct[];
+}
+
 export interface SaleBrief {
   id: number;
   created_at: string;

@@ -2,6 +2,7 @@ mod auth;
 mod cash;
 mod db;
 mod inventory;
+mod reports;
 mod sales;
 
 use db::{init_db, Db};
@@ -183,6 +184,8 @@ pub fn run() {
             cash::get_cash_movements,
             cash::get_cash_session_summary,
             cash::close_cash_session,
+            // ── Dashboard / Reportes ──
+            reports::get_dashboard_summary,
             // ── POS / Ventas ──
             sales::search_products,
             sales::get_product_by_barcode,

@@ -7,13 +7,14 @@
   import POS from '$lib/components/POS.svelte';
   import CashPanel from '$lib/components/CashPanel.svelte';
   import Inventory from '$lib/components/Inventory.svelte';
+  import Dashboard from '$lib/components/Dashboard.svelte';
 
-  type Tab = 'pos' | 'cash' | 'inventory';
+  type Tab = 'dashboard' | 'pos' | 'cash' | 'inventory';
 
   // ── Estado principal ──
   let cashSession = $state<CashSession | null>(null);
   let checkingSession = $state(false);
-  let activeTab = $state<Tab>('pos');
+  let activeTab = $state<Tab>('dashboard');
 
   // ── Handlers ──
   async function handleLogin() {
@@ -77,6 +78,13 @@
       <nav class="header-tabs">
         <button
           class="tab-btn"
+          class:active={activeTab === 'dashboard'}
+          onclick={() => activeTab = 'dashboard'}
+        >
+          📊 Dashboard
+        </button>
+        <button
+          class="tab-btn"
           class:active={activeTab === 'pos'}
           onclick={() => activeTab = 'pos'}
         >
@@ -111,7 +119,9 @@
 
     <!-- Content -->
     <main class="app-content">
-      {#if activeTab === 'pos'}
+      {#if activeTab === 'dashboard'}
+        <Dashboard />
+      {:else if activeTab === 'pos'}
         <POS session={cashSession} />
       {:else if activeTab === 'cash'}
         <CashPanel
